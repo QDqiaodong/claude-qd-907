@@ -6,6 +6,7 @@ import com.casting.shop.dto.MaterialStatDTO;
 import java.util.List;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 /**
  * 铸件卡仓储。
@@ -48,4 +49,18 @@ public interface CastingRepository extends JpaRepository<Casting, Long> {
             + "left join mold m on m.id = c.mold_id "
             + "order by c.id desc", nativeQuery = true)
     List<Casting> listDerived();
+
+    /**
+     * 仅为铸件行加锁，不做实体映射：实体 Casting 上有 @SQLSelect 的 join 投影
+     * （heat_no / heat_alloy / mold_no / mold_name），把「纯表 FOR UPDATE」的窄结果集
+     * 直接映射成实体会缺列。业务流程先调本方法拿行锁，再用 findById 取实体。
+     * 首次检验开单 / 返修闭环状态回写 / 手工状态流转都先锁铸件行，
+     * 挡住现场重复点击造成的双开单、双流转。
+     */
+    @Query(value = "select id from casting where id = :id for update", nativeQuery = true)
+    Long lockRowById(@Param("id") Long id);
+
+    /** 只读状态的原生标量查询，不经过实体上的 @SQLSelect 自定义加载器 */
+    @Query(value = "select status from casting where id = :id", nativeQuery = true)
+    String findStatusById(@Param("id") Long id);
 }

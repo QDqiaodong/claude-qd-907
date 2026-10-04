@@ -78,6 +78,16 @@ const inspection = {
   remove: (id) => call(http.delete(`/inspection/${id}`))
 }
 
+// 返修处置与复检闭环：返修中/待复检队列 → 完成登记 → 撤回 → 复检（合格/再返修/报废）→ 追加更正
+const rework = {
+  board: (stage) => call(http.get('/rework/board', { params: stage ? { stage } : {} })),
+  detail: (id) => call(http.get(`/rework/${id}`)),
+  complete: (id, data) => call(http.post(`/rework/${id}/complete`, data)),
+  withdraw: (id, operator) => call(http.post(`/rework/${id}/withdraw`, { operator })),
+  reinspect: (id, data) => call(http.post(`/rework/${id}/reinspect`, data)),
+  correct: (id, data) => call(http.post(`/rework/${id}/correct`, data))
+}
+
 const stats = {
   overview: () => call(http.get('/stats/overview')),
   dict: () => call(http.get('/stats/dict')),
@@ -89,4 +99,4 @@ const stats = {
   verdict: () => call(http.get('/stats/verdict'))
 }
 
-export default { http, smelt, charge, mold, casting, inspection, stats }
+export default { http, smelt, charge, mold, casting, inspection, rework, stats }

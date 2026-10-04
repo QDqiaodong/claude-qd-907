@@ -3,7 +3,6 @@ package com.casting.shop.service;
 import com.casting.shop.common.BizException;
 import com.casting.shop.common.Dict;
 import com.casting.shop.domain.Casting;
-import com.casting.shop.domain.Defect;
 import com.casting.shop.domain.Inspection;
 import com.casting.shop.dto.DefectRequest;
 import com.casting.shop.dto.InspectionRequest;
@@ -24,6 +23,10 @@ import org.springframework.util.StringUtils;
  *
  * <p>规则：检验单号唯一；缺陷类型六选一；判定只能合格 / 返修 / 报废；
  * 判返修或报废必须至少一条缺陷记录；判报废的铸件不可再入库；只能对「待检验」的铸件开单。</p>
+ *
+ * <p>判「返修」不再只是把铸件打回清理：会同时通过 {@link ReworkService} 建立独立返修队列
+ * （返修单 + 第 1 轮待办 + 首次缺陷快照引用），铸件进入「返修中」，后续处置/复检只能走返修链路。
+ * 复检单是另一张新建的检验单（编号 IR- 前缀），本服务只负责它的查看，不负责创建。</p>
  */
 @Service
 public class InspectionService {
@@ -31,12 +34,17 @@ public class InspectionService {
     private final InspectionRepository inspectionRepository;
     private final DefectRepository defectRepository;
     private final CastingRepository castingRepository;
+    private final DefectAssembler defectAssembler;
+    private final ReworkService reworkService;
 
     public InspectionService(InspectionRepository inspectionRepository, DefectRepository defectRepository,
-                             CastingRepository castingRepository) {
+                             CastingRepository castingRepository, DefectAssembler defectAssembler,
+                             ReworkService reworkService) {
         this.inspectionRepository = inspectionRepository;
         this.defectRepository = defectRepository;
         this.castingRepository = castingRepository;
+        this.defectAssembler = defectAssembler;
+        this.reworkService = reworkService;
     }
 
     public List<Inspection> list() {
@@ -74,15 +82,19 @@ public class InspectionService {
             throw new BizException("判「" + Dict.verdictName(request.getVerdict()) + "」必须至少录入一条缺陷记录");
         }
 
-        Casting casting = request.getCastingId() == null ? null
-                : castingRepository.findById(request.getCastingId())
-                        .orElseThrow(() -> new BizException("铸件卡不存在：" + request.getCastingId()));
-        if (casting == null) {
+        if (request.getCastingId() == null) {
             throw new BizException("检验单必须挂到一张铸件卡上");
         }
+        // 先对铸件行加锁（纯表 FOR UPDATE，不触发实体上的 join 投影加载器），再取实体
+        Long lockedCastingId = castingRepository.lockRowById(request.getCastingId());
+        if (lockedCastingId == null) {
+            throw new BizException("铸件卡不存在：" + request.getCastingId());
+        }
+        Casting casting = castingRepository.findById(request.getCastingId())
+                .orElseThrow(() -> new BizException("铸件卡不存在：" + request.getCastingId()));
         if (!"INSPECTING".equals(casting.getStatus())) {
             throw new BizException("铸件 " + casting.getCastingNo() + " 当前为「" + Dict.castingStatusName(casting.getStatus())
-                    + "」，只有待检验的铸件可以开检验单");
+                    + "」，只有待检验的铸件可以开首次检验单；复检必须在返修队列里对已完成的轮次发起");
         }
 
         Inspection inspection = new Inspection();
@@ -96,19 +108,25 @@ public class InspectionService {
         inspection.setInspectTime(LocalDateTime.now());
         Inspection saved = inspectionRepository.save(inspection);
 
-        int count = 0;
-        for (DefectRequest item : defects) {
-            defectRepository.save(toDefect(saved.getId(), item));
-            count++;
-        }
+        int count = defectAssembler.saveAll(saved.getId(), defects);
         saved.setDefectCount(count);
-        applyVerdictToCasting(casting, saved.getVerdict());
+        if ("REWORK".equals(saved.getVerdict())) {
+            // 判返修：建立独立返修队列（返修单 + 第 1 轮待办），铸件进「返修中」
+            reworkService.openFromInspection(casting, saved);
+        } else {
+            applyVerdictToCasting(casting, saved.getVerdict());
+        }
         return inspectionRepository.save(saved);
     }
 
     @Transactional
     public void delete(Long id) {
         Inspection inspection = get(id);
+        String referenced = reworkService.describeSnapshotReference(id);
+        if (referenced != null) {
+            throw new BizException("检验单 " + inspection.getInspectNo() + " 已作为" + referenced
+                    + "被返修链路引用，属于不可删除的缺陷快照证据（如需更正请在返修单里追加说明）");
+        }
         defectRepository.deleteByInspectId(id);
         inspectionRepository.deleteById(id);
     }
@@ -139,35 +157,17 @@ public class InspectionService {
         return data;
     }
 
-    /** 判定结论回写到铸件卡：报废的铸件不可再入库 */
+    /**
+     * 首次检验非返修结论回写到铸件卡：合格入库、报废终止。
+     * 注意：REWORK 不在这里处理——判返修必须走 {@link ReworkService#openFromInspection} 建立返修队列，
+     * 直接改铸件状态会造成「已入库/已回清理但返修证据缺失」，这里也故意不再保留 REWORK 分支。
+     */
     private void applyVerdictToCasting(Casting casting, String verdict) {
         switch (verdict) {
             case "PASS" -> casting.setStatus("STORED");
-            case "REWORK" -> casting.setStatus("CLEANING");
             case "SCRAP" -> casting.setStatus("SCRAPPED");
-            default -> throw new BizException("判定结论非法：" + verdict);
+            default -> throw new BizException("判定结论非法，或返修结论必须走返修队列：" + verdict);
         }
         castingRepository.save(casting);
-    }
-
-    private Defect toDefect(Long inspectId, DefectRequest request) {
-        if (!Dict.isValidDefectType(request.getDefectType())) {
-            throw new BizException("缺陷类型非法，只能六选一：" + request.getDefectType());
-        }
-        if (!Dict.isValidSeverity(request.getSeverity())) {
-            throw new BizException("严重度非法（MINOR / MAJOR / CRITICAL）");
-        }
-        if (request.getQuantity() == null || request.getQuantity() <= 0) {
-            throw new BizException("缺陷个数必须大于 0");
-        }
-        Defect defect = new Defect();
-        defect.setInspectId(inspectId);
-        defect.setDefectType(request.getDefectType());
-        defect.setSeverity(request.getSeverity());
-        defect.setPosition(request.getPosition());
-        defect.setSizeMm(request.getSizeMm());
-        defect.setQuantity(request.getQuantity());
-        defect.setRemark(request.getRemark());
-        return defect;
     }
 }

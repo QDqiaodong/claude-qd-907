@@ -8,6 +8,7 @@ import ChargeView from './views/ChargeView.vue'
 import MoldView from './views/MoldView.vue'
 import CastingView from './views/CastingView.vue'
 import InspectionView from './views/InspectionView.vue'
+import ReworkView from './views/ReworkView.vue'
 
 // 左侧一列按「工段」分组的手风琴：点组名才展开该组子项，同一时刻只有一组是展开的。
 // 页面没有顶部菜单，工段切换全靠这一列。
@@ -45,6 +46,7 @@ const groups = [
     desc: '缺陷徽章 · 结论三选一',
     children: [
       { label: '缺陷判定', path: '/inspection', query: {} },
+      { label: '返修处置与复检', path: '/rework', query: {} },
       { label: '缺陷分布', path: '/inspection', query: { view: 'stat' } }
     ]
   }
@@ -60,7 +62,8 @@ const viewMap = {
   '/charge': ChargeView,
   '/mold': MoldView,
   '/casting': CastingView,
-  '/inspection': InspectionView
+  '/inspection': InspectionView,
+  '/rework': ReworkView
 }
 
 const currentView = computed(

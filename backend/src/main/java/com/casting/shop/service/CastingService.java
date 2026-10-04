@@ -5,11 +5,13 @@ import com.casting.shop.common.Dict;
 import com.casting.shop.domain.Casting;
 import com.casting.shop.domain.Heat;
 import com.casting.shop.domain.Mold;
+import com.casting.shop.domain.ReworkOrder;
 import com.casting.shop.dto.CastingRequest;
 import com.casting.shop.repository.CastingRepository;
 import com.casting.shop.repository.HeatRepository;
 import com.casting.shop.repository.InspectionRepository;
 import com.casting.shop.repository.MoldRepository;
+import com.casting.shop.repository.ReworkOrderRepository;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
@@ -37,15 +39,18 @@ public class CastingService {
     private final MoldRepository moldRepository;
     private final MoldService moldService;
     private final InspectionRepository inspectionRepository;
+    private final ReworkOrderRepository reworkOrderRepository;
 
     public CastingService(CastingRepository castingRepository, HeatRepository heatRepository,
                           MoldRepository moldRepository, MoldService moldService,
-                          InspectionRepository inspectionRepository) {
+                          InspectionRepository inspectionRepository,
+                          ReworkOrderRepository reworkOrderRepository) {
         this.castingRepository = castingRepository;
         this.heatRepository = heatRepository;
         this.moldRepository = moldRepository;
         this.moldService = moldService;
         this.inspectionRepository = inspectionRepository;
+        this.reworkOrderRepository = reworkOrderRepository;
     }
 
     /** 列表也走 join SQL，页面上每张卡片直接看得到派生字段 */
@@ -116,6 +121,12 @@ public class CastingService {
     @Transactional
     public Casting update(Long id, CastingRequest request) {
         Casting casting = get(id);
+        if (request.getStatus() != null) {
+            // 铸件状态只能按工艺链路由系统回写：普通编辑直接写 status 会绕过返修闭环，
+            // 造成「铸件已入库/打回但返修证据缺失」，所以一律拒绝（状态流转走专门的 transition）。
+            throw new BizException("铸件卡编辑接口不能直接修改状态：待浇→…→入库的流转走状态按钮，"
+                    + "返修中的铸件只能在返修队列里登记处置/复检");
+        }
         String material = StringUtils.hasText(request.getMaterial()) ? request.getMaterial() : casting.getMaterial();
         if (StringUtils.hasText(request.getMaterial()) && !Dict.isValidMaterial(request.getMaterial())) {
             throw new BizException("材质非法，只能五选一：" + request.getMaterial());
@@ -137,14 +148,29 @@ public class CastingService {
 
     /**
      * 状态流转：必须逐级推进；报废为终态且可以在任一阶段判定（已入库的除外）。
+     * 返修支线状态 REWORK / REINSPECT 不能从这里手动进入或离开——它们只属于返修闭环。
      */
     @Transactional
     public Casting transition(Long id, String targetStatus) {
+        // 先纯表行锁，再经实体加载器取铸件（见 CastingRepository.lockRowById 的说明）
+        Long lockedId = castingRepository.lockRowById(id);
+        if (lockedId == null) {
+            throw new BizException("铸件卡不存在：" + id);
+        }
         Casting casting = get(id);
         if (!Dict.isValidCastingStatus(targetStatus)) {
             throw new BizException("铸件状态非法：" + targetStatus);
         }
+        if ("REWORK".equals(targetStatus) || "REINSPECT".equals(targetStatus)) {
+            throw new BizException("「" + Dict.castingStatusName(targetStatus) + "」是返修闭环的支线状态，"
+                    + "只能由返修处置/复检流程自动推进，不能手动流转");
+        }
         String current = casting.getStatus() == null ? "WAIT_POUR" : casting.getStatus();
+        if ("REWORK".equals(current) || "REINSPECT".equals(current)) {
+            throw new BizException("铸件 " + casting.getCastingNo() + " 正在返修闭环中（"
+                    + Dict.castingStatusName(current) + "），必须在返修队列完成处置与复检：合格才能入库、"
+                    + "判废由复检终止，不能从这里改状态");
+        }
         if (current.equals(targetStatus)) {
             throw new BizException("铸件 " + casting.getCastingNo() + " 已处于「" + Dict.castingStatusName(targetStatus) + "」");
         }
@@ -177,6 +203,11 @@ public class CastingService {
     @Transactional
     public void delete(Long id) {
         Casting casting = get(id);
+        ReworkOrder reworkOrder = reworkOrderRepository.findByCastingId(id).orElse(null);
+        if (reworkOrder != null) {
+            throw new BizException("铸件 " + casting.getCastingNo() + " 已进入返修闭环（返修单 "
+                    + reworkOrder.getReworkNo() + "），不能删除铸件卡，否则返修证据将失去归属");
+        }
         if (!inspectionRepository.findByCastingIdOrderByIdDesc(id).isEmpty()) {
             throw new BizException("铸件 " + casting.getCastingNo() + " 已有检验记录，不能删除");
         }

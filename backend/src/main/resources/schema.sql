@@ -16,6 +16,10 @@ CREATE DATABASE IF NOT EXISTS casting_shop
 USE casting_shop;
 
 SET FOREIGN_KEY_CHECKS = 0;
+DROP TABLE IF EXISTS rework_event;
+DROP TABLE IF EXISTS rework_correction;
+DROP TABLE IF EXISTS rework_round;
+DROP TABLE IF EXISTS rework_order;
 DROP TABLE IF EXISTS defect;
 DROP TABLE IF EXISTS inspection;
 DROP TABLE IF EXISTS casting;
@@ -122,6 +126,8 @@ CREATE TABLE casting (
     cavity_no VARCHAR(16),
     theory_weight DECIMAL(10,2),
     actual_weight DECIMAL(10,2),
+    -- 除原有 待浇/已浇注/清理/待检验/入库/报废 外，新增返修支线：
+    -- REWORK 返修中（独立返修队列）、REINSPECT 待复检；二者只能由返修流程写入
     status VARCHAR(16),
     customer VARCHAR(48),
     operator VARCHAR(32),
@@ -160,6 +166,78 @@ CREATE TABLE defect (
     remark VARCHAR(64),
     KEY idx_defect_inspect (inspect_id),
     KEY idx_defect_type (defect_type)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------------- 返修单 ----------------
+-- 一件铸件首次检验判返修即建立一张终身唯一返修单（uk_rework_casting 兜底并发建单）。
+-- stage 为返修阶段：REWORKING 返修中 → REINSPECTING 待复检（多轮会来回切）→ STORED/SCRAPPED 终态。
+-- snapshot_inspect_id 引用首次检验单（首次缺陷快照），检验单被引用后不可删除。
+CREATE TABLE rework_order (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    rework_no VARCHAR(24) NOT NULL UNIQUE,
+    casting_id BIGINT NOT NULL,
+    casting_no VARCHAR(24),
+    snapshot_inspect_id BIGINT NOT NULL,
+    stage VARCHAR(16),
+    current_round INT DEFAULT 1,
+    created_at DATETIME,
+    closed_at DATETIME,
+    UNIQUE KEY uk_rework_casting (casting_id),
+    KEY idx_rework_stage (stage),
+    KEY idx_rework_snapshot (snapshot_inspect_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------------- 返修轮次 ----------------
+-- 一轮 = 一次「上轮缺陷快照(source_inspect_id) → 返修处置 → 复检(reinspect_id)」。
+-- (rework_id, round_no) 唯一：同一轮并发完成/并发复检在数据库层只可能成功一次。
+-- reinspect_id 为空时处置结果可撤回重填；写入后本轮所有字段冻结，只能追加更正说明。
+CREATE TABLE rework_round (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    rework_id BIGINT NOT NULL,
+    round_no INT NOT NULL,
+    source_inspect_id BIGINT NOT NULL,
+    round_status VARCHAR(16),
+    rework_method VARCHAR(16),
+    responsible_person VARCHAR(32),
+    completed_at DATETIME,
+    rework_note VARCHAR(255),
+    completed_by VARCHAR(32),
+    reinspect_id BIGINT,
+    reinspect_verdict VARCHAR(16),
+    reinspect_time DATETIME,
+    reinspector VARCHAR(32),
+    created_at DATETIME,
+    UNIQUE KEY uk_round_no (rework_id, round_no),
+    KEY idx_round_rework (rework_id),
+    KEY idx_round_source (source_inspect_id),
+    KEY idx_round_reinspect (reinspect_id),
+    KEY idx_round_status (round_status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------------- 返修更正说明（只追加） ----------------
+-- 复检创建后历史证据冻结，误填只能往这里追加；原值与时间戳原样保留。
+CREATE TABLE rework_correction (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    rework_id BIGINT NOT NULL,
+    round_id BIGINT NOT NULL,
+    target_type VARCHAR(16),
+    content VARCHAR(255),
+    operator VARCHAR(32),
+    created_at DATETIME,
+    KEY idx_correction_rework (rework_id),
+    KEY idx_correction_round (round_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------------- 返修事件流（只增不改不删） ----------------
+CREATE TABLE rework_event (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    rework_id BIGINT NOT NULL,
+    round_no INT,
+    event_type VARCHAR(16),
+    operator VARCHAR(32),
+    detail VARCHAR(255),
+    created_at DATETIME,
+    KEY idx_event_rework (rework_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- =====================================================================
@@ -251,16 +329,16 @@ INSERT INTO mold (mold_no, mold_name, mold_type, cavity_count, life_count, used_
 INSERT INTO casting (casting_no, casting_name, material, heat_id, mold_id, cavity_no, theory_weight, actual_weight, status, customer, operator, pour_time, created_at) VALUES
 ('C-2601-0101', '离心泵叶轮 φ180',    'STAINLESS',    1,  6, '1',  12.40,  12.86, 'STORED',     '江苏恒力泵业',   '陈志远', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 6 HOUR, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 9 HOUR),
 ('C-2601-0102', '离心泵叶轮 φ180',    'STAINLESS',    1,  6, '2',  12.40,  12.92, 'STORED',     '江苏恒力泵业',   '陈志远', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 6 HOUR, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 9 HOUR),
-('C-2601-0103', '不锈钢泵盖法兰',      'STAINLESS',    2,  7, '1',   8.60,   8.71, 'INSPECTING', '江苏恒力泵业',   '陈志远', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 5 HOUR, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 8 HOUR),
+('C-2601-0103', '不锈钢泵盖法兰',      'STAINLESS',    2,  7, '1',   8.60,   8.71, 'REWORK',     '江苏恒力泵业',   '陈志远', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 5 HOUR, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 8 HOUR),
 ('C-2601-0104', '不锈钢阀体毛坯',      'STAINLESS',    2,  7, '2',   9.20,   NULL, 'INSPECTING', '浙江瓯海阀门',   '陈志远', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 5 HOUR, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 8 HOUR),
 ('C-2602-0201', '减速机箱体 HJ-320',   'CAST_IRON',    3,  4, '1',  86.50,  87.30, 'STORED',     '山东临工传动',   '范国栋', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 4 HOUR, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 7 HOUR),
-('C-2602-0202', '机床底座 800×1200',   'CAST_IRON',    3,  5, '1', 210.00, 212.40, 'CLEANING',   '沈阳机床配套',   '范国栋', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 4 HOUR, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 7 HOUR),
+('C-2602-0202', '机床底座 800×1200',   'CAST_IRON',    3,  5, '1', 210.00, 212.40, 'STORED',     '沈阳机床配套',   '范国栋', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 4 HOUR, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 7 HOUR),
 ('C-2602-0203', '灰铁轴承端盖',        'CAST_IRON',    3,  4, '2',  18.40,  18.62, 'POURED',     '山东临工传动',   '范国栋', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 4 HOUR, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 7 HOUR),
-('C-2603-0301', '球铁托轮 φ240',       'DUCTILE_IRON', 4,  1, '1',  32.60,  33.05, 'INSPECTING', '河南卫华起重',   '黄玉良', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 3 HOUR, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 6 HOUR),
+('C-2603-0301', '球铁托轮 φ240',       'DUCTILE_IRON', 4,  1, '1',  32.60,  33.05, 'REINSPECT',  '河南卫华起重',   '黄玉良', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 3 HOUR, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 6 HOUR),
 ('C-2603-0302', '航空管路接头',        'STAINLESS',    7,  7, '1',   3.25,   3.31, 'INSPECTING', '航宇机附件厂',   '许建国', NULL, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 3 HOUR),
 ('C-2603-0303', '高压管路三通',        'STAINLESS',    7,  7, '2',   4.10,   NULL, 'SCRAPPED',   '航宇机附件厂',   '许建国', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 3 HOUR, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 3 HOUR),
 ('C-2604-0401', '铝合金压铸端盖',      'ALUMINUM',    8,  8, '1',   2.85,   2.90, 'STORED',     '宁波旭升汽配',   '林俊宏', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 2 HOUR, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 2 HOUR),
-('C-2604-0402', '铝合金散热壳体 φ240', 'ALUMINUM',    9,  8, '2',   5.40,   NULL, 'CLEANING',   '宁波旭升汽配',   '林俊宏', NULL, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 2 HOUR),
+('C-2604-0402', '铝合金散热壳体 φ240', 'ALUMINUM',    9,  8, '2',   5.40,   NULL, 'REWORK',     '宁波旭升汽配',   '林俊宏', NULL, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 2 HOUR),
 ('C-2604-0403', '铝合金支架总成',      'ALUMINUM',    9,  9, '1',   1.95,   1.99, 'INSPECTING', '苏州明志科技',   '林俊宏', NULL, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 2 HOUR),
 ('C-2605-0501', '铸钢齿轮箱上盖',      'CARBON_STEEL', 5, 10, '1', 128.60, 130.20, 'STORED',     '太原重工配套',   '文国庆', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 2 HOUR, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 5 HOUR),
 ('C-2605-0502', '铸钢机架横梁',        'CARBON_STEEL', 12, 10, '1', 320.00,  NULL, 'POURED',     '太重融资租赁',   '文国庆', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 8 HOUR, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 12 HOUR);
@@ -273,7 +351,10 @@ INSERT INTO inspection (inspect_no, casting_id, casting_no, defect_count, verdic
 ('I-26030401-01', 10, 'C-2603-0303', 3, 'SCRAP',  176.20, '钱广安', '拐角贯穿裂纹，直接判废不允许回用',   UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 3 HOUR),
 ('I-26030501-01', 11, 'C-2604-0401', 0, 'PASS',    82.40, '孙佩林', '压铸件致密度良好，无明显缺陷',       UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 2 HOUR),
 ('I-26030502-01', 12, 'C-2604-0402', 1, 'REWORK',  78.60, '孙佩林', '顶面气孔群，需重新负压浸渗处理',     UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 2 HOUR),
-('I-26030601-01', 14, 'C-2605-0501', 1, 'PASS',   235.80, '周立群', '腹板一处小砂眼，按标准允许补焊',     UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 1 HOUR);
+('I-26030601-01', 14, 'C-2605-0501', 1, 'PASS',   235.80, '周立群', '腹板一处小砂眼，按标准允许补焊',     UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 1 HOUR),
+-- 返修闭环示例（9、10 为复检单，IR- 前缀；旧的 4、7 号首次检验单即首次缺陷快照，仍在本表里照常查看）
+('IR-0001-R1',   6,  'C-2602-0202', 0, 'PASS',   216.20, '周立群', '补焊重加工后结合面与侧壁复检合格',   UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 1 HOUR),
+('IR-0002-R1',  12,  'C-2604-0402', 1, 'REWORK',  79.10, '孙佩林', '浸渗后仍有一处残余气孔，安排二次浸渗', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 1 HOUR);
 
 INSERT INTO defect (inspect_id, defect_type, severity, defect_position, size_mm, quantity, remark) VALUES
 (2, 'SAND_HOLE', 'MINOR',    '叶轮前盖板',   1.20, 2, '直径 1.2mm，打磨可消除'),
@@ -284,3 +365,79 @@ INSERT INTO defect (inspect_id, defect_type, severity, defect_position, size_mm,
 (5, 'POROSITY',  'MINOR',    '法兰端面',     2.60, 6, '密集性小气孔'),
 (7, 'POROSITY',  'MAJOR',    '端盖顶面',     4.20, 3, '需负压浸渗返修'),
 (8, 'SAND_HOLE', 'MINOR',    '齿轮箱腹板',   1.80, 2, '允许补焊后使用');
+-- 注：复检单 9(合格无缺陷) / 10(再返修,1 条缺陷) 的缺陷记录随返修闭环种子一起插入，见文件末尾。
+
+-- =====================================================================
+-- 返修处置与复检闭环种子数据
+-- 单1 铸件6：首次判返修(检验4) → 补焊重加工 → 复检合格(检验9) 入库（完整闭环）
+-- 单2 铸件12：首次判返修(检验7) → 负压浸渗 → 复检仍返修(检验10) → 第2轮待返修（积压）
+-- 单3 铸件3：首次判返修(检验11)后尚未登记处置（返修中积压，可演示完成/撤回）
+-- 单4 铸件9：首次判返修(检验12)并已登记完成待复检（可演示并发复检、撤回、判废终止）
+-- =====================================================================
+
+-- 单3、单4 的首次检验单（判返修）必须先于返修数据插入：它俩是 rework_order.snapshot_inspect_id
+-- 与 rework_round.source_inspect_id 指向的缺陷快照
+INSERT INTO inspection (id, inspect_no, casting_id, casting_no, defect_count, verdict, hardness_hb, inspector, remark, inspect_time) VALUES
+(11, 'I-26030103-01', 3,  'C-2601-0103', 1, 'REWORK', 190.10, '钱广安', '法兰密封面一处轻微缩松，补焊后复检',  UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 2 HOUR),
+(12, 'I-26030301-02', 9,  'C-2603-0301', 1, 'REWORK', 183.50, '钱广安', '接头密封面微裂纹，限局部补焊返修',    UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 1 HOUR);
+
+INSERT INTO defect (inspect_id, defect_type, severity, defect_position, size_mm, quantity, remark) VALUES
+(11, 'SHRINKAGE', 'MINOR',  '泵盖法兰密封面', 1.60, 1, '轻微缩松，补焊可消除'),
+(12, 'CRACK',     'MINOR',  '接头密封面',     2.20, 1, '浅表微裂纹，未贯穿，允许一次补焊'),
+-- 返修闭环复检缺陷：10=IR-0002-R1 复检再返修发现的残余气孔，即第2轮的缺陷快照
+(10, 'POROSITY', 'MINOR',    '端盖顶面边缘', 1.40, 1, '残余单个气孔，二次浸渗可消除');
+
+INSERT INTO rework_order (id, rework_no, casting_id, casting_no, snapshot_inspect_id, stage, current_round, created_at, closed_at) VALUES
+(1, 'RW-26030301-01', 6,  'C-2602-0202', 4,  'STORED',       1, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 3 HOUR, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 1 HOUR),
+(2, 'RW-26030502-01', 12, 'C-2604-0402', 7,  'REWORKING',    2, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 2 HOUR, NULL),
+(3, 'RW-26030103-01', 3,  'C-2601-0103', 11, 'REWORKING',    1, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 2 HOUR, NULL),
+(4, 'RW-26030301-02', 9,  'C-2603-0301', 12, 'REINSPECTING', 1, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 1 HOUR, NULL);
+
+INSERT INTO rework_round (rework_id, round_no, source_inspect_id, round_status, rework_method, responsible_person, completed_at, rework_note, completed_by, reinspect_id, reinspect_verdict, reinspect_time, reinspector, created_at) VALUES
+-- 单1 第1轮：补焊 + 重加工，复检合格
+(1, 1, 4,  'PASS', 'WELD', '周大伟', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 2 HOUR,
+   '结合面孔群清根后分层补焊，焊后重新铣结合面并探伤；侧壁夹渣打磨见光。', '范国栋',
+   9, 'PASS', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 1 HOUR, '周立群',
+   UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 3 HOUR),
+-- 单2 第1轮：负压浸渗，复检仍返修
+(2, 1, 7,  'REWORK', 'IMPREGNATION', '郑海峰', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 2 HOUR,
+   '整壳 0.6MPa 负压浸渗 20 分钟后烘干固化。', '范国栋',
+   10, 'REWORK', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 1 HOUR, '孙佩林',
+   UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 2 HOUR),
+-- 单2 第2轮：基于复检单10 的残余气孔生成的新待办（尚未处置）
+(2, 2, 10, 'PENDING', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+   UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 1 HOUR),
+-- 单3 第1轮：待返修
+(3, 1, 11, 'PENDING', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+   UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 2 HOUR),
+-- 单4 第1轮：已登记完成待复检（尚未创建复检单，可撤回）
+(4, 1, 12, 'COMPLETED', 'WELD', '周大伟', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 1 HOUR,
+   '接头密封面微裂纹清根补焊后抛修，等待复检判定。', '黄玉良',
+   NULL, NULL, NULL, NULL,
+   UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 1 HOUR);
+
+-- 更正说明示例：单1 复检合格后补焊责任人署名误填，只能追加更正（原始记录保留）
+INSERT INTO rework_correction (rework_id, round_id, target_type, content, operator, created_at)
+SELECT 1, r.id, 'REWORK', '返修责任人实际为「吴大伟」，登记时误写为「周大伟」，以此条为准，原登记记录保留。', '范国栋',
+       UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 1 HOUR
+FROM rework_round r WHERE r.rework_id = 1 AND r.round_no = 1;
+
+-- 事件流（种子历史按时间顺序补齐）
+INSERT INTO rework_event (rework_id, round_no, event_type, operator, detail, created_at) VALUES
+(1, 1, 'CREATED',     '周立群', '首次检验单 I-26030301-01 判返修，进入返修队列（缺陷快照已留存）', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 3 HOUR),
+(1, 1, 'COMPLETED',   '范国栋', '责任人 周大伟 · 补焊 · 结合面孔群清根补焊重加工，侧壁夹渣打磨',      UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 2 HOUR),
+(1, 1, 'REINSPECTED', '周立群', '复检合格（复检单 IR-0001-R1）',                                    UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 1 HOUR),
+(1, 1, 'CLOSED_STORED','周立群', '返修闭环结束，铸件入库',                                          UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 1 HOUR),
+(1, 1, 'CORRECTED',   '范国栋', '追加「返修处置」更正：责任人实际为吴大伟，原登记记录保留',          UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 1 HOUR),
+(2, 1, 'CREATED',     '孙佩林', '首次检验单 I-26030502-01 判返修，进入返修队列（缺陷快照已留存）', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 2 HOUR),
+(2, 1, 'COMPLETED',   '范国栋', '责任人 郑海峰 · 负压浸渗 · 整壳 0.6MPa 浸渗 20 分钟',              UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 2 HOUR),
+(2, 1, 'REINSPECTED', '孙佩林', '复检仍需返修（复检单 IR-0002-R1，缺陷 1 条），第 2 轮待办已生成',  UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 1 HOUR),
+(3, 1, 'CREATED',     '钱广安', '首次检验单 I-26030103-01 判返修，进入返修队列（缺陷快照已留存）', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 2 HOUR),
+(4, 1, 'CREATED',     '钱广安', '首次检验单 I-26030301-02 判返修，进入返修队列（缺陷快照已留存）', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 1 HOUR),
+(4, 1, 'COMPLETED',   '黄玉良', '责任人 周大伟 · 补焊 · 密封面微裂纹清根补焊后抛修',                UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 1 HOUR);
+
+
+-- 种子数据使用了显式 id，把自增计数器拨到现有最大值之后，避免运行时新单据撞主键
+ALTER TABLE inspection   AUTO_INCREMENT = 100;
+ALTER TABLE rework_order AUTO_INCREMENT = 100;
+ALTER TABLE rework_round AUTO_INCREMENT = 100;

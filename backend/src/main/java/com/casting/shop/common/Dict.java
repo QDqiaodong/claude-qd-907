@@ -146,6 +146,8 @@ public final class Dict {
             "SCRAPPED", "已报废");
 
     // ---------------- 铸件状态流转：待浇 → 已浇注 → 清理 → 检验 → 入库 ----------------
+    // 注意：REWORK（返修中）/ REINSPECT（待复检）不在这条线性流里，它们是检验判返修后
+    // 走出的「返修闭环」支线状态，只能由返修流程写入，铸件卡手工流转/编辑一律拦掉。
     public static final List<String> CASTING_FLOW = List.of(
             "WAIT_POUR", "POURED", "CLEANING", "INSPECTING", "STORED");
 
@@ -155,7 +157,9 @@ public final class Dict {
             "CLEANING", "清理中",
             "INSPECTING", "待检验",
             "STORED", "已入库",
-            "SCRAPPED", "已报废");
+            "SCRAPPED", "已报废",
+            "REWORK", "返修中",
+            "REINSPECT", "待复检");
 
     private static final Map<String, String> CASTING_STATUS_COLOR = Map.of(
             "WAIT_POUR", "#78909c",
@@ -163,7 +167,9 @@ public final class Dict {
             "CLEANING", "#26a69a",
             "INSPECTING", "#e08a2b",
             "STORED", "#2f9e5f",
-            "SCRAPPED", "#e4573d");
+            "SCRAPPED", "#e4573d",
+            "REWORK", "#ef6c00",
+            "REINSPECT", "#00897b");
 
     // ---------------- 缺陷类型（6 选 1） ----------------
     public static final List<String> DEFECT_TYPES = List.of(
@@ -202,6 +208,73 @@ public final class Dict {
             "PASS", "#2f9e5f",
             "REWORK", "#e08a2b",
             "SCRAP", "#e4573d");
+
+    // ---------------- 返修处置方式（返修完成登记时必选） ----------------
+    public static final List<String> REWORK_METHODS = List.of(
+            "WELD", "GRIND", "IMPREGNATION", "RE_MACHINE", "SALVAGE");
+
+    private static final Map<String, String> REWORK_METHOD_NAME = Map.of(
+            "WELD", "补焊",
+            "GRIND", "打磨修磨",
+            "IMPREGNATION", "负压浸渗",
+            "RE_MACHINE", "重新机加工",
+            "SALVAGE", "校正回用");
+
+    // ---------------- 返修单状态（返修阶段，列表据此定位积压） ----------------
+    public static final List<String> REWORK_STAGES = List.of(
+            "REWORKING", "REINSPECTING", "STORED", "SCRAPPED");
+
+    private static final Map<String, String> REWORK_STAGE_NAME = Map.of(
+            "REWORKING", "返修中",
+            "REINSPECTING", "待复检",
+            "STORED", "复检合格已入库",
+            "SCRAPPED", "复检判废已终止");
+
+    private static final Map<String, String> REWORK_STAGE_COLOR = Map.of(
+            "REWORKING", "#ef6c00",
+            "REINSPECTING", "#00897b",
+            "STORED", "#2f9e5f",
+            "SCRAPPED", "#e4573d");
+
+    // ---------------- 返修轮次当前状态（细粒度，用于按钮与时间线） ----------------
+    // 撤回不保留为状态值：撤回后状态回到 PENDING、处置字段清空，撤回动作本身由 rework_event 留痕。
+    private static final Map<String, String> ROUND_STATUS_NAME = Map.of(
+            "PENDING", "待返修",
+            "COMPLETED", "返修完成待复检",
+            "PASS", "复检合格",
+            "REWORK", "复检再返修",
+            "SCRAP", "复检判废");
+
+    private static final Map<String, String> ROUND_STATUS_COLOR = Map.of(
+            "PENDING", "#e08a2b",
+            "COMPLETED", "#00897b",
+            "PASS", "#2f9e5f",
+            "REWORK", "#ef6c00",
+            "SCRAP", "#e4573d");
+
+    // ---------------- 更正说明类型（证据不可改写，只能追加） ----------------
+    private static final Map<String, String> CORRECTION_TARGET_NAME = Map.of(
+            "REWORK", "返修处置",
+            "REINSPECT", "复检结论");
+
+    // ---------------- 返修事件类型（审计时间线） ----------------
+    private static final Map<String, String> REWORK_EVENT_NAME = Map.of(
+            "CREATED", "返修单建立",
+            "COMPLETED", "登记返修完成",
+            "WITHDRAWN", "撤回完成结果",
+            "REINSPECTED", "登记复检结论",
+            "CORRECTED", "追加更正说明",
+            "CLOSED_STORED", "闭环：合格入库",
+            "CLOSED_SCRAP", "闭环：判废终止");
+
+    private static final Map<String, String> REWORK_EVENT_COLOR = Map.of(
+            "CREATED", "#8e24aa",
+            "COMPLETED", "#00897b",
+            "WITHDRAWN", "#8d8399",
+            "REINSPECTED", "#1565c0",
+            "CORRECTED", "#f9a825",
+            "CLOSED_STORED", "#2f9e5f",
+            "CLOSED_SCRAP", "#e4573d");
 
     // ---------------- 业务参数 ----------------
     /** 配料合计重量与炉次出炉重量的允许偏差比例（%） */
@@ -358,5 +431,45 @@ public final class Dict {
 
     public static String verdictColor(String verdict) {
         return verdict == null ? "#8e24aa" : VERDICT_COLOR.getOrDefault(verdict, "#8e24aa");
+    }
+
+    public static boolean isValidReworkMethod(String method) {
+        return method != null && REWORK_METHOD_NAME.containsKey(method);
+    }
+
+    public static String reworkMethodName(String method) {
+        return method == null ? "" : REWORK_METHOD_NAME.getOrDefault(method, method);
+    }
+
+    public static boolean isValidReworkStage(String stage) {
+        return stage != null && REWORK_STAGE_NAME.containsKey(stage);
+    }
+
+    public static String reworkStageName(String stage) {
+        return stage == null ? "" : REWORK_STAGE_NAME.getOrDefault(stage, stage);
+    }
+
+    public static String reworkStageColor(String stage) {
+        return stage == null ? "#8e24aa" : REWORK_STAGE_COLOR.getOrDefault(stage, "#8e24aa");
+    }
+
+    public static String roundStatusName(String status) {
+        return status == null ? "" : ROUND_STATUS_NAME.getOrDefault(status, status);
+    }
+
+    public static String roundStatusColor(String status) {
+        return status == null ? "#8e24aa" : ROUND_STATUS_COLOR.getOrDefault(status, "#8e24aa");
+    }
+
+    public static String correctionTargetName(String target) {
+        return target == null ? "" : CORRECTION_TARGET_NAME.getOrDefault(target, target);
+    }
+
+    public static String reworkEventName(String type) {
+        return type == null ? "" : REWORK_EVENT_NAME.getOrDefault(type, type);
+    }
+
+    public static String reworkEventColor(String type) {
+        return type == null ? "#8e24aa" : REWORK_EVENT_COLOR.getOrDefault(type, "#8e24aa");
     }
 }

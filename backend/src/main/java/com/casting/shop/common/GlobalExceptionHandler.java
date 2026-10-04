@@ -43,11 +43,23 @@ public class GlobalExceptionHandler {
     }
 
     /**
-     * 唯一约束冲突：400（避免在页面上抛出非人话的外键报错）
+     * 唯一约束冲突：400（避免在页面上抛出非人话的外键报错）。
+     * 返修链路的两个关键唯一约束单独翻译成业务话术：
+     * uk_rework_casting（一件铸件只能有一张返修单）、uk_round_no（同一轮只能成功一次）——
+     * 这是两人同时提交时数据库给出的最终裁决，提示失败方刷新查看已生效结果。
      */
     @ExceptionHandler(DataIntegrityViolationException.class)
     public ResponseEntity<ApiResponse<Void>> handleIntegrity(DataIntegrityViolationException e) {
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ApiResponse.fail("存在唯一性约束冲突，请检查编号、手机号是否重复"));
+        String msg = e.getMessage() == null ? "" : e.getMessage();
+        if (msg.contains("uk_rework_casting")) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(ApiResponse.fail("该铸件的返修队列已建立（可能是同事先提交成功），请刷新页面查看已生效的返修单"));
+        }
+        if (msg.contains("uk_round_no")) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(ApiResponse.fail("同一返修轮次只能成功一次（可能是同事先提交成功），请刷新页面查看已生效的轮次与操作者"));
+        }
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ApiResponse.fail("存在唯一性约束冲突，请检查编号是否重复"));
     }
 
     /**

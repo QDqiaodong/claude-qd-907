@@ -35,6 +35,11 @@ function nextStatus(status) {
   return idx >= 0 && idx < FLOW.length - 1 ? FLOW[idx + 1] : null
 }
 
+// 返修支线状态只能由返修闭环推进，状态按钮在这里全部收起来（后端也会拦）
+function inReworkLoop(status) {
+  return status === 'REWORK' || status === 'REINSPECT'
+}
+
 async function openCard(item) {
   loading.value = true
   try {
@@ -215,20 +220,25 @@ onMounted(load)
         </div>
 
         <div class="op-row">
-          <el-button
-            v-if="nextStatus(selected.status)"
-            size="small"
-            type="primary"
-            :loading="loading"
-            @click="move(nextStatus(selected.status))"
-          >流转 → {{ statusNameOf[nextStatus(selected.status)] }}</el-button>
-          <el-button
-            size="small"
-            type="danger"
-            plain
-            :loading="loading"
-            @click="move('SCRAPPED')"
-          >判废</el-button>
+          <template v-if="!inReworkLoop(selected.status)">
+            <el-button
+              v-if="nextStatus(selected.status)"
+              size="small"
+              type="primary"
+              :loading="loading"
+              @click="move(nextStatus(selected.status))"
+            >流转 → {{ statusNameOf[nextStatus(selected.status)] }}</el-button>
+            <el-button
+              size="small"
+              type="danger"
+              plain
+              :loading="loading"
+              @click="move('SCRAPPED')"
+            >判废</el-button>
+          </template>
+          <el-tag v-else type="warning" size="small" effect="plain">
+            该铸件在返修闭环中（{{ selected.statusName }}），请到「返修处置与复检」页登记处置/复检
+          </el-tag>
           <el-button size="small" type="danger" plain @click="removeCasting">删除卡片</el-button>
         </div>
       </section>

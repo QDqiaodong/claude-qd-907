@@ -250,8 +250,13 @@ onMounted(load)
         </el-table-column>
         <el-table-column prop="inspector" label="检验员" width="100" />
         <el-table-column prop="remark" label="备注" min-width="220" />
-        <el-table-column label="操作" width="90">
+        <el-table-column label="操作" width="150">
           <template #default="{ row }">
+            <el-button
+              v-if="row.verdict === 'REWORK'"
+              size="small" type="warning" plain
+              @click="router.push('/rework')"
+            >返修队列 →</el-button>
             <el-button size="small" type="danger" plain @click="removeInspection(row)">删除</el-button>
           </template>
         </el-table-column>

@@ -7,6 +7,7 @@ import ChargeView from '../views/ChargeView.vue'
 import MoldView from '../views/MoldView.vue'
 import CastingView from '../views/CastingView.vue'
 import InspectionView from '../views/InspectionView.vue'
+import ReworkView from '../views/ReworkView.vue'
 
 const routes = [
   { path: '/', redirect: '/smelt' },
@@ -15,6 +16,7 @@ const routes = [
   { path: '/mold', name: 'mold', component: MoldView },
   { path: '/casting', name: 'casting', component: CastingView },
   { path: '/inspection', name: 'inspection', component: InspectionView },
+  { path: '/rework', name: 'rework', component: ReworkView },
   { path: '/:pathMatch(.*)*', redirect: '/smelt' }
 ]
 
