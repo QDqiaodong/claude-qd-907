@@ -13,4 +13,5 @@ public class DefectRequest {
     private BigDecimal sizeMm;
     private Integer quantity;
     private String remark;
+    private Long sourceSnapshotId;
 }

@@ -4,8 +4,10 @@ import com.casting.shop.domain.Casting;
 import com.casting.shop.dto.CastingStatusDTO;
 import com.casting.shop.dto.MaterialStatDTO;
 import java.util.List;
+import java.util.Optional;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 /**
  * 铸件卡仓储。
@@ -40,6 +42,10 @@ public interface CastingRepository extends JpaRepository<Casting, Long> {
      * 列表也走同一条 join SQL（与 @SQLSelect 口径一致），这样页面上每张卡片都能直接读到
      * 派生出来的炉次号 / 炉次材质 / 模具编号 / 模具名称。
      */
+    /** 只锁 casting 本行；派生信息仍由 findById/listDerived 的 join SQL 负责。 */
+    @Query(value = "select c.* from casting c where c.id = :id for update", nativeQuery = true)
+    Optional<Casting> findLockedById(@Param("id") Long id);
+
     @Query(value = "select c.*, "
             + "h.heat_no as heat_no, h.alloy as heat_alloy, "
             + "m.mold_no as mold_no, m.mold_name as mold_name "

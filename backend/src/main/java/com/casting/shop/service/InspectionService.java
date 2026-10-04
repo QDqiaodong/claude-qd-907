@@ -1,6 +1,7 @@
 package com.casting.shop.service;
 
 import com.casting.shop.common.BizException;
+import com.casting.shop.common.ConflictException;
 import com.casting.shop.common.Dict;
 import com.casting.shop.domain.Casting;
 import com.casting.shop.domain.Defect;
@@ -31,12 +32,14 @@ public class InspectionService {
     private final InspectionRepository inspectionRepository;
     private final DefectRepository defectRepository;
     private final CastingRepository castingRepository;
+    private final ReworkService reworkService;
 
     public InspectionService(InspectionRepository inspectionRepository, DefectRepository defectRepository,
-                             CastingRepository castingRepository) {
+                             CastingRepository castingRepository, ReworkService reworkService) {
         this.inspectionRepository = inspectionRepository;
         this.defectRepository = defectRepository;
         this.castingRepository = castingRepository;
+        this.reworkService = reworkService;
     }
 
     public List<Inspection> list() {
@@ -75,14 +78,15 @@ public class InspectionService {
         }
 
         Casting casting = request.getCastingId() == null ? null
-                : castingRepository.findById(request.getCastingId())
+                : castingRepository.findLockedById(request.getCastingId())
                         .orElseThrow(() -> new BizException("铸件卡不存在：" + request.getCastingId()));
         if (casting == null) {
             throw new BizException("检验单必须挂到一张铸件卡上");
         }
         if (!"INSPECTING".equals(casting.getStatus())) {
-            throw new BizException("铸件 " + casting.getCastingNo() + " 当前为「" + Dict.castingStatusName(casting.getStatus())
-                    + "」，只有待检验的铸件可以开检验单");
+            throw new ConflictException("铸件 " + casting.getCastingNo()
+                    + " 已被其他操作者处理为「" + Dict.castingStatusName(casting.getStatus())
+                    + "」，请刷新查看已生效记录");
         }
 
         Inspection inspection = new Inspection();
@@ -94,23 +98,25 @@ public class InspectionService {
         inspection.setVerdict(request.getVerdict());
         inspection.setRemark(request.getRemark());
         inspection.setInspectTime(LocalDateTime.now());
+        inspection.setInspectionKind("INITIAL");
+        inspection.setRoundNo(1);
         Inspection saved = inspectionRepository.save(inspection);
 
+        List<Defect> savedDefects = new ArrayList<>();
         int count = 0;
         for (DefectRequest item : defects) {
-            defectRepository.save(toDefect(saved.getId(), item));
+            savedDefects.add(defectRepository.save(toDefect(saved.getId(), item)));
             count++;
         }
         saved.setDefectCount(count);
-        applyVerdictToCasting(casting, saved.getVerdict());
-        return inspectionRepository.save(saved);
-    }
-
-    @Transactional
-    public void delete(Long id) {
-        Inspection inspection = get(id);
-        defectRepository.deleteByInspectId(id);
-        inspectionRepository.deleteById(id);
+        saved = inspectionRepository.save(saved);
+        if ("REWORK".equals(saved.getVerdict())) {
+            // REWORK：入独立返修队列，同时复制首次缺陷快照；禁止由 casting.status 直接替代证据链。
+            reworkService.startFromInitialInspection(saved, savedDefects);
+        } else {
+            applyVerdictToCasting(casting, saved.getVerdict());
+        }
+        return saved;
     }
 
     /** 检验看板：缺陷类型统计、判定分布、待检验铸件、六类缺陷字典 */
@@ -139,13 +145,12 @@ public class InspectionService {
         return data;
     }
 
-    /** 判定结论回写到铸件卡：报废的铸件不可再入库 */
+    /** 首检结论回写到铸件卡；返修必须走 {@link ReworkService#startFromInitialInspection} */
     private void applyVerdictToCasting(Casting casting, String verdict) {
         switch (verdict) {
             case "PASS" -> casting.setStatus("STORED");
-            case "REWORK" -> casting.setStatus("CLEANING");
             case "SCRAP" -> casting.setStatus("SCRAPPED");
-            default -> throw new BizException("判定结论非法：" + verdict);
+            default -> throw new BizException("返修结论必须创建返修单，不能直接改铸件状态");
         }
         castingRepository.save(casting);
     }

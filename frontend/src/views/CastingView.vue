@@ -4,7 +4,8 @@ import { ElMessage } from 'element-plus'
 import router from '../router'
 import api from '../api'
 
-const FLOW = ['WAIT_POUR', 'POURED', 'CLEANING', 'INSPECTING', 'STORED']
+const FLOW = ['WAIT_POUR', 'POURED', 'CLEANING', 'INSPECTING', 'REWORK', 'WAIT_REINSPECT', 'STORED', 'SCRAPPED']
+const MANUAL_FLOW = ['WAIT_POUR', 'POURED', 'CLEANING', 'INSPECTING']
 
 const castings = ref([])
 const statusStats = ref([])
@@ -31,8 +32,17 @@ const statusNameOf = computed(() => {
 })
 
 function nextStatus(status) {
-  const idx = FLOW.indexOf(status)
-  return idx >= 0 && idx < FLOW.length - 1 ? FLOW[idx + 1] : null
+  const idx = MANUAL_FLOW.indexOf(status)
+  return idx >= 0 && idx < MANUAL_FLOW.length - 1 ? MANUAL_FLOW[idx + 1] : null
+}
+
+function isFlowDone(code, current) {
+  if (code === current) return true
+  if (current === 'STORED') return ['WAIT_POUR', 'POURED', 'CLEANING', 'INSPECTING', 'STORED'].includes(code)
+  if (current === 'SCRAPPED') return ['WAIT_POUR', 'POURED', 'CLEANING', 'INSPECTING', 'SCRAPPED'].includes(code)
+  const manualIdx = MANUAL_FLOW.indexOf(current)
+  const codeIdx = MANUAL_FLOW.indexOf(code)
+  return manualIdx >= 0 && codeIdx >= 0 && codeIdx <= manualIdx
 }
 
 async function openCard(item) {
@@ -193,7 +203,7 @@ onMounted(load)
             v-for="(code, idx) in FLOW"
             :key="code"
             class="flow-node"
-            :class="{ done: idx <= FLOW.indexOf(selected.status), cur: code === selected.status }"
+            :class="{ done: isFlowDone(code, selected.status), cur: code === selected.status }"
           >{{ statusNameOf[code] || code }}</span>
         </div>
 
@@ -223,6 +233,7 @@ onMounted(load)
             @click="move(nextStatus(selected.status))"
           >流转 → {{ statusNameOf[nextStatus(selected.status)] }}</el-button>
           <el-button
+            v-if="['POURED', 'CLEANING'].includes(selected.status)"
             size="small"
             type="danger"
             plain
@@ -230,6 +241,9 @@ onMounted(load)
             @click="move('SCRAPPED')"
           >判废</el-button>
           <el-button size="small" type="danger" plain @click="removeCasting">删除卡片</el-button>
+          <div class="op-note" v-if="['INSPECTING','REWORK','WAIT_REINSPECT'].includes(selected.status)">
+            该铸件处于质量闭环：入库、报废和返修状态只能由检验/返修复检页面驱动。
+          </div>
         </div>
       </section>
     </div>

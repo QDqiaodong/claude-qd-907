@@ -10,8 +10,6 @@ public interface DefectRepository extends JpaRepository<Defect, Long> {
 
     List<Defect> findByInspectIdOrderByIdAsc(Long inspectId);
 
-    void deleteByInspectId(Long inspectId);
-
     /**
      * 手写 JPQL ⑤：按缺陷类型统计出现次数、平均缺陷尺寸与缺陷个数合计。
      */

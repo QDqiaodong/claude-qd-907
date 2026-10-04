@@ -85,22 +85,15 @@ async function submitVerdict(code) {
     await load()
   } catch (e) {
     ElMessage.error(e.message)
+    await load()
   } finally {
     loading.value = false
   }
 }
 
-async function removeInspection(row) {
-  loading.value = true
-  try {
-    await api.inspection.remove(row.id)
-    ElMessage.success('检验单已删除')
-    await load()
-  } catch (e) {
-    ElMessage.error(e.message)
-  } finally {
-    loading.value = false
-  }
+function openRework(row) {
+  if (!row.reworkOrderId) return ElMessage.warning('该检验记录不属于返修闭环')
+  router.push({ path: '/rework', query: { orderId: String(row.reworkOrderId) } })
 }
 
 async function load() {
@@ -237,7 +230,8 @@ onMounted(load)
     <section class="panel">
       <div class="panel-title">检验记录</div>
       <el-table :data="inspections" size="small" border stripe>
-        <el-table-column prop="inspectNo" label="检验单号" width="150" />
+        <el-table-column prop="inspectNo" label="检验单号" width="170" />
+        <el-table-column prop="inspectionKindName" label="记录类型" width="92" />
         <el-table-column prop="castingNo" label="铸件编号" width="130" />
         <el-table-column prop="hardnessHb" label="硬度 HB" width="90" />
         <el-table-column prop="defectCount" label="缺陷条数" width="90" />
@@ -250,9 +244,15 @@ onMounted(load)
         </el-table-column>
         <el-table-column prop="inspector" label="检验员" width="100" />
         <el-table-column prop="remark" label="备注" min-width="220" />
-        <el-table-column label="操作" width="90">
+        <el-table-column label="操作" width="120">
           <template #default="{ row }">
-            <el-button size="small" type="danger" plain @click="removeInspection(row)">删除</el-button>
+            <el-button
+              size="small"
+              type="warning"
+              plain
+              :disabled="!row.reworkOrderId"
+              @click="openRework(row)"
+            >返修闭环</el-button>
           </template>
         </el-table-column>
       </el-table>

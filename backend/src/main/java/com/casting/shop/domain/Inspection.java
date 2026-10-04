@@ -58,6 +58,19 @@ public class Inspection {
     @Column(name = "inspect_time")
     private LocalDateTime inspectTime;
 
+    /** INITIAL=首次检验；REINSPECTION=返修复检 */
+    @Column(name = "inspection_kind", length = 16)
+    private String inspectionKind;
+
+    @Column(name = "rework_order_id")
+    private Long reworkOrderId;
+
+    @Column(name = "rework_round_id")
+    private Long reworkRoundId;
+
+    @Column(name = "round_no")
+    private Integer roundNo;
+
     @Transient
     public String getVerdictName() {
         return Dict.verdictName(verdict);
@@ -66,5 +79,10 @@ public class Inspection {
     @Transient
     public String getVerdictColor() {
         return Dict.verdictColor(verdict);
+    }
+
+    @Transient
+    public String getInspectionKindName() {
+        return "REINSPECTION".equals(inspectionKind) ? "返修复检" : "首次检验";
     }
 }

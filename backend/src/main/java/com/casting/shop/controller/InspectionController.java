@@ -6,7 +6,6 @@ import com.casting.shop.dto.InspectionRequest;
 import com.casting.shop.service.InspectionService;
 import java.util.List;
 import java.util.Map;
-import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -47,11 +46,5 @@ public class InspectionController {
     @PostMapping
     public ApiResponse<Inspection> create(@RequestBody InspectionRequest request) {
         return ApiResponse.success("检验单已录入", service.create(request));
-    }
-
-    @DeleteMapping("/{id}")
-    public ApiResponse<Void> delete(@PathVariable Long id) {
-        service.delete(id);
-        return ApiResponse.success("检验单已删除", null);
     }
 }

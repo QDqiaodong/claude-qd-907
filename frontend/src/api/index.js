@@ -74,8 +74,16 @@ const inspection = {
   board: () => call(http.get('/inspection/board')),
   list: () => call(http.get('/inspection/list')),
   detail: (id) => call(http.get(`/inspection/${id}`)),
-  create: (data) => call(http.post('/inspection', data)),
-  remove: (id) => call(http.delete(`/inspection/${id}`))
+  create: (data) => call(http.post('/inspection', data))
+}
+
+const rework = {
+  board: () => call(http.get('/rework/board')),
+  detail: (id) => call(http.get(`/rework/order/${id}`)),
+  complete: (id, data) => call(http.post(`/rework/round/${id}/complete`, data)),
+  withdraw: (id, data) => call(http.post(`/rework/round/${id}/withdraw`, data)),
+  correction: (id, data) => call(http.post(`/rework/round/${id}/correction`, data)),
+  reinspect: (id, data) => call(http.post(`/rework/round/${id}/reinspect`, data))
 }
 
 const stats = {
@@ -89,4 +97,4 @@ const stats = {
   verdict: () => call(http.get('/stats/verdict'))
 }
 
-export default { http, smelt, charge, mold, casting, inspection, stats }
+export default { http, smelt, charge, mold, casting, inspection, rework, stats }

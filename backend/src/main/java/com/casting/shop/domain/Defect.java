@@ -51,6 +51,10 @@ public class Defect {
     @Column(name = "remark", length = 64)
     private String remark;
 
+    /** 复检结论引用的上一轮缺陷快照；首次检验为空 */
+    @Column(name = "source_snapshot_id")
+    private Long sourceSnapshotId;
+
     @Transient
     public String getDefectTypeName() {
         return Dict.defectTypeName(defectType);

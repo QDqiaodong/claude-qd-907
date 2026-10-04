@@ -154,6 +154,8 @@ public final class Dict {
             "POURED", "已浇注",
             "CLEANING", "清理中",
             "INSPECTING", "待检验",
+            "REWORK", "返修中",
+            "WAIT_REINSPECT", "待复检",
             "STORED", "已入库",
             "SCRAPPED", "已报废");
 
@@ -162,6 +164,8 @@ public final class Dict {
             "POURED", "#5c6bc0",
             "CLEANING", "#26a69a",
             "INSPECTING", "#e08a2b",
+            "REWORK", "#fb8c00",
+            "WAIT_REINSPECT", "#8e24aa",
             "STORED", "#2f9e5f",
             "SCRAPPED", "#e4573d");
 
@@ -202,6 +206,32 @@ public final class Dict {
             "PASS", "#2f9e5f",
             "REWORK", "#e08a2b",
             "SCRAP", "#e4573d");
+
+    // ---------------- 返修闭环 ----------------
+    public static final List<String> REWORK_METHODS = List.of(
+            "WELD", "POLISH", "MACHINING", "IMPREGNATION", "HEAT_TREAT", "OTHER");
+
+    private static final Map<String, String> REWORK_METHOD_NAME = Map.of(
+            "WELD", "补焊",
+            "POLISH", "打磨修磨",
+            "MACHINING", "重新加工",
+            "IMPREGNATION", "负压浸渗",
+            "HEAT_TREAT", "热处理矫正",
+            "OTHER", "其他处置");
+
+    private static final Map<String, String> REWORK_STAGE_NAME = Map.of(
+            "PENDING", "待返修",
+            "WAIT_REINSPECT", "待复检",
+            "PASS", "复检合格",
+            "SCRAPPED", "复检报废",
+            "REINSPECTED", "再次返修");
+
+    private static final Map<String, String> REWORK_STAGE_COLOR = Map.of(
+            "PENDING", "#fb8c00",
+            "WAIT_REINSPECT", "#8e24aa",
+            "PASS", "#2f9e5f",
+            "SCRAPPED", "#e4573d",
+            "REINSPECTED", "#f093fb");
 
     // ---------------- 业务参数 ----------------
     /** 配料合计重量与炉次出炉重量的允许偏差比例（%） */
@@ -324,6 +354,12 @@ public final class Dict {
     }
 
     public static int castingStageIndex(String status) {
+        if ("REWORK".equals(status) || "WAIT_REINSPECT".equals(status)) {
+            return 4;
+        }
+        if ("SCRAPPED".equals(status)) {
+            return CASTING_FLOW.size() - 1;
+        }
         int idx = CASTING_FLOW.indexOf(status);
         return idx < 0 ? 0 : idx;
     }
@@ -358,5 +394,21 @@ public final class Dict {
 
     public static String verdictColor(String verdict) {
         return verdict == null ? "#8e24aa" : VERDICT_COLOR.getOrDefault(verdict, "#8e24aa");
+    }
+
+    public static boolean isValidReworkMethod(String method) {
+        return method != null && REWORK_METHOD_NAME.containsKey(method);
+    }
+
+    public static String reworkMethodName(String method) {
+        return method == null ? "" : REWORK_METHOD_NAME.getOrDefault(method, method);
+    }
+
+    public static String reworkStageName(String stage) {
+        return stage == null ? "" : REWORK_STAGE_NAME.getOrDefault(stage, stage);
+    }
+
+    public static String reworkStageColor(String stage) {
+        return stage == null ? "#8e24aa" : REWORK_STAGE_COLOR.getOrDefault(stage, "#8e24aa");
     }
 }

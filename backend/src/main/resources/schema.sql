@@ -16,6 +16,10 @@ CREATE DATABASE IF NOT EXISTS casting_shop
 USE casting_shop;
 
 SET FOREIGN_KEY_CHECKS = 0;
+DROP TABLE IF EXISTS rework_correction;
+DROP TABLE IF EXISTS rework_defect_snapshot;
+DROP TABLE IF EXISTS rework_round;
+DROP TABLE IF EXISTS rework_order;
 DROP TABLE IF EXISTS defect;
 DROP TABLE IF EXISTS inspection;
 DROP TABLE IF EXISTS casting;
@@ -144,8 +148,13 @@ CREATE TABLE inspection (
     inspector VARCHAR(32),
     remark VARCHAR(128),
     inspect_time DATETIME,
+    inspection_kind VARCHAR(16) DEFAULT 'INITIAL',
+    rework_order_id BIGINT,
+    rework_round_id BIGINT,
+    round_no INT DEFAULT 1,
     KEY idx_inspect_casting (casting_id),
-    KEY idx_inspect_verdict (verdict)
+    KEY idx_inspect_verdict (verdict),
+    KEY idx_inspect_rework (rework_order_id, rework_round_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------- 缺陷记录 ----------------
@@ -158,8 +167,78 @@ CREATE TABLE defect (
     size_mm DECIMAL(6,2),
     quantity INT,
     remark VARCHAR(64),
+    source_snapshot_id BIGINT,
     KEY idx_defect_inspect (inspect_id),
-    KEY idx_defect_type (defect_type)
+    KEY idx_defect_type (defect_type),
+    KEY idx_defect_snapshot (source_snapshot_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------------- 返修闭环：返修单 ----------------
+CREATE TABLE rework_order (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    rework_no VARCHAR(24) NOT NULL UNIQUE,
+    casting_id BIGINT NOT NULL,
+    casting_no VARCHAR(24) NOT NULL,
+    initial_inspection_id BIGINT NOT NULL,
+    current_round_no INT NOT NULL DEFAULT 1,
+    status VARCHAR(16),
+    current_stage VARCHAR(20),
+    created_at DATETIME,
+    closed_at DATETIME,
+    version INT NOT NULL DEFAULT 0,
+    UNIQUE KEY uk_rework_initial_inspection (initial_inspection_id),
+    KEY idx_rework_casting (casting_id),
+    KEY idx_rework_status (status),
+    KEY idx_rework_stage (current_stage)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------------- 返修闭环：每一轮处置 ----------------
+CREATE TABLE rework_round (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    rework_order_id BIGINT NOT NULL,
+    casting_id BIGINT NOT NULL,
+    round_no INT NOT NULL,
+    stage VARCHAR(20) NOT NULL,
+    source_inspection_id BIGINT NOT NULL,
+    responsible_person VARCHAR(32),
+    disposition_method VARCHAR(20),
+    disposition_note VARCHAR(255),
+    completed_by VARCHAR(32),
+    completed_at DATETIME,
+    withdrawn_by VARCHAR(32),
+    withdrawn_at DATETIME,
+    reinspection_id BIGINT,
+    created_at DATETIME,
+    version INT NOT NULL DEFAULT 0,
+    UNIQUE KEY uk_rework_round_no (rework_order_id, round_no),
+    KEY idx_round_order (rework_order_id),
+    KEY idx_round_stage (stage)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------------- 返修闭环：每轮上一轮缺陷快照（不可改） ----------------
+CREATE TABLE rework_defect_snapshot (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    rework_round_id BIGINT NOT NULL,
+    source_defect_id BIGINT,
+    source_snapshot_id BIGINT,
+    defect_type VARCHAR(16) NOT NULL,
+    severity VARCHAR(16),
+    defect_position VARCHAR(32),
+    size_mm DECIMAL(6,2),
+    quantity INT,
+    remark VARCHAR(64),
+    KEY idx_snapshot_round (rework_round_id),
+    KEY idx_snapshot_source (source_snapshot_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------------- 返修闭环：复检创建后的追加更正 ----------------
+CREATE TABLE rework_correction (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    rework_round_id BIGINT NOT NULL,
+    correction_note VARCHAR(255) NOT NULL,
+    operator VARCHAR(32),
+    created_at DATETIME,
+    KEY idx_correction_round (rework_round_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- =====================================================================
@@ -284,3 +363,37 @@ INSERT INTO defect (inspect_id, defect_type, severity, defect_position, size_mm,
 (5, 'POROSITY',  'MINOR',    '法兰端面',     2.60, 6, '密集性小气孔'),
 (7, 'POROSITY',  'MAJOR',    '端盖顶面',     4.20, 3, '需负压浸渗返修'),
 (8, 'SAND_HOLE', 'MINOR',    '齿轮箱腹板',   1.80, 2, '允许补焊后使用');
+
+-- 历史首检判返修的铸件补齐独立返修队列，并复制首次缺陷快照
+UPDATE inspection SET inspection_kind = 'INITIAL', round_no = 1 WHERE inspection_kind IS NULL;
+
+INSERT INTO rework_order
+  (rework_no, casting_id, casting_no, initial_inspection_id, current_round_no, status, current_stage, created_at, closed_at, version)
+SELECT CONCAT('RW-', SUBSTRING(i.inspect_no, 3)),
+       i.casting_id, i.casting_no, i.id, 1, 'ACTIVE', 'PENDING', i.inspect_time, NULL, 0
+FROM inspection i
+WHERE i.verdict = 'REWORK';
+
+INSERT INTO rework_round
+  (rework_order_id, casting_id, round_no, stage, source_inspection_id,
+   responsible_person, disposition_method, disposition_note, completed_by, completed_at,
+   withdrawn_by, withdrawn_at, reinspection_id, created_at, version)
+SELECT o.id, o.casting_id, 1, 'PENDING', o.initial_inspection_id,
+       NULL, NULL, NULL, NULL, NULL,
+       NULL, NULL, NULL, o.created_at, 0
+FROM rework_order o;
+
+INSERT INTO rework_defect_snapshot
+  (rework_round_id, source_defect_id, source_snapshot_id, defect_type, severity,
+   defect_position, size_mm, quantity, remark)
+SELECT r.id, d.id, NULL, d.defect_type, d.severity,
+       d.defect_position, d.size_mm, d.quantity, d.remark
+FROM defect d
+JOIN inspection i ON i.id = d.inspect_id
+JOIN rework_order o ON o.initial_inspection_id = i.id
+JOIN rework_round r ON r.rework_order_id = o.id AND r.round_no = 1;
+
+UPDATE casting c
+JOIN rework_order o ON o.casting_id = c.id
+SET c.status = 'REWORK'
+WHERE o.status = 'ACTIVE';

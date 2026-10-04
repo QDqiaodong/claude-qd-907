@@ -127,6 +127,9 @@ public class CastingService {
         if (request.getTheoryWeight() != null && request.getTheoryWeight().compareTo(BigDecimal.ZERO) <= 0) {
             throw new BizException("理论重量必须大于 0 kg");
         }
+        if (request.getStatus() != null) {
+            throw new BizException("铸件状态只能由浇注流转、首检/复检或返修闭环驱动，不能在编辑卡片时直接改写");
+        }
         if (casting.getHeatId() != null && !material.equals(casting.getHeatAlloy())) {
             throw new BizException("铸件材质「" + Dict.materialName(material)
                     + "」与所属炉次的材质「" + Dict.materialName(casting.getHeatAlloy()) + "」不一致");
@@ -153,6 +156,13 @@ public class CastingService {
         }
         if ("STORED".equals(current)) {
             throw new BizException("铸件 " + casting.getCastingNo() + " 已入库，不能再流转");
+        }
+        if ("STORED".equals(targetStatus)) {
+            throw new BizException("入库只能由首次检验或返修复检的「合格」结论触发，不能手工直接入库");
+        }
+        if ("INSPECTING".equals(current) || "REWORK".equals(current) || "WAIT_REINSPECT".equals(current)
+                || "REWORK".equals(targetStatus) || "WAIT_REINSPECT".equals(targetStatus)) {
+            throw new BizException("检验、返修、复检和报废必须走质量闭环，不能通过铸件状态流转绕过");
         }
         if ("SCRAPPED".equals(targetStatus)) {
             if ("WAIT_POUR".equals(current)) {
